@@ -111,4 +111,6 @@ export const collections = {
   ads: () => getCollection('ads'),
   notifications: () => getCollection('notifications'),
   auditLogs: () => getCollection('auditLogs'),
+  claims: () => getCollection('claims'),
+  documentWatchAlerts: () => getCollection('documentWatchAlerts'),
 }

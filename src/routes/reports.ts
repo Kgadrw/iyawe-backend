@@ -330,4 +330,61 @@ router.get('/found', authenticate, async (req: AuthRequest, res: Response) => {
   }
 })
 
+const statusSchema = z.object({
+  status: z.enum(['PENDING', 'CLAIM_PENDING', 'MATCHED', 'VERIFIED', 'HANDED_OVER']),
+  note: z.string().optional(),
+})
+
+// PATCH /api/reports/found/:id/status
+router.patch('/found/:id/status', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const user = req.user!
+    if (!['ADMIN', 'OFFICER', 'INSTITUTION'].includes(user.role)) {
+      return res.status(403).json({ error: 'Forbidden' })
+    }
+
+    const { id } = req.params
+    const data = statusSchema.parse(req.body)
+
+    const report = await collections.foundReports().findOne({ _id: new ObjectId(id) })
+    if (!report) return res.status(404).json({ error: 'Report not found' })
+
+    if (user.role !== 'ADMIN') {
+      const { getStaffStationContext, staffCanManageFoundReport } = await import('../lib/station-scope')
+      const stationCtx = await getStaffStationContext(user.userId)
+      if (
+        !staffCanManageFoundReport(stationCtx, {
+          userId: report.userId as ObjectId | string | undefined,
+          stationName: (report as { stationName?: string | null }).stationName,
+        })
+      ) {
+        return res.status(403).json({ error: 'Forbidden' })
+      }
+    }
+
+    await collections.foundReports().updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { status: data.status, statusNote: data.note || null, updatedAt: new Date() } }
+    )
+
+    await writeAuditLog({
+      actorUserId: new ObjectId(user.userId),
+      actorRole: user.role as any,
+      action: 'REPORT_STATUS_UPDATE',
+      entityType: 'FOUND_REPORT',
+      entityId: new ObjectId(id),
+      message: `Updated found report status to ${data.status}`,
+      metadata: { note: data.note || null, previousStatus: report.status || null },
+    })
+
+    return res.json({ message: 'Status updated successfully' })
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Invalid input', details: error.errors })
+    }
+    console.error('Error updating found report status:', error)
+    return res.status(500).json({ error: 'Failed to update status' })
+  }
+})
+
 export default router

@@ -12,6 +12,9 @@ import searchRoutes from './routes/search'
 import documentsRoutes from './routes/documents'
 import adminRoutes from './routes/admin'
 import institutionsRoutes from './routes/institutions'
+import adsRoutes from './routes/ads'
+import claimsRoutes from './routes/claims'
+import documentWatchRoutes from './routes/document-watch'
 
 // Load environment variables
 dotenv.config()
@@ -55,6 +58,9 @@ app.use('/api/search', searchRoutes)
 app.use('/api/documents', documentsRoutes)
 app.use('/api/admin', adminRoutes)
 app.use('/api/institutions', institutionsRoutes)
+app.use('/api/ads', adsRoutes)
+app.use('/api/claims', claimsRoutes)
+app.use('/api/document-watch', documentWatchRoutes)
 
 // 404 handler
 app.use((req: Request, res: Response) => {

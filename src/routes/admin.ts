@@ -107,7 +107,7 @@ router.post('/institutions', upload.single('image'), async (req: Request, res: R
     }
 
     // Create a user account for the institution
-    const { createUser } = await import('../lib/auth')
+    const { createUser } = await import('../lib/auth.js')
     const institutionUser = await createUser(
       data.email,
       `temp-password-${Date.now()}`, // Temporary password
@@ -293,7 +293,7 @@ router.post('/users', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'User with this email already exists' })
     }
 
-    const { createUser } = await import('../lib/auth')
+    const { createUser } = await import('../lib/auth.js')
     const user = await createUser(
       data.email.trim().toLowerCase(),
       data.password,

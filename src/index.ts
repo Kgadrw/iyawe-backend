@@ -73,19 +73,37 @@ app.use((err: Error, req: Request, res: Response, next: any) => {
   res.status(500).json({ error: 'Internal server error' })
 })
 
-// Start server
+// Start server (local / Render). On Vercel, the Express app is exported as a serverless handler.
 async function startServer() {
   try {
-    // Connect to database
-    await connectDatabase()
-    
-    // Initialize database indexes
-    await initializeDatabaseIndexes()
-    
-    // Start server
+    let dbConnected = false
+    let retries = 3
+
+    while (retries > 0 && !dbConnected) {
+      try {
+        await connectDatabase()
+        await initializeDatabaseIndexes()
+        dbConnected = true
+      } catch (dbError) {
+        retries--
+        if (retries > 0) {
+          console.log(`⏳ Retrying MongoDB connection... (${retries} attempts left)`)
+          await new Promise((resolve) => setTimeout(resolve, 2000))
+        } else {
+          console.warn('⚠️  Could not connect to MongoDB. Server will start but database operations may fail.')
+          console.warn('📖 See: backend/MONGODB_SETUP.md for MongoDB setup instructions')
+        }
+      }
+    }
+
     app.listen(PORT, () => {
       console.log(`🚀 Server is running on http://localhost:${PORT}`)
       console.log(`📝 Health check: http://localhost:${PORT}/health`)
+      if (dbConnected) {
+        console.log(`✅ MongoDB is connected`)
+      } else {
+        console.log(`⚠️  MongoDB is NOT connected - API routes may fail`)
+      }
     })
   } catch (error) {
     console.error('Failed to start server:', error)
@@ -93,17 +111,29 @@ async function startServer() {
   }
 }
 
-// Handle graceful shutdown
-process.on('SIGINT', async () => {
-  console.log('\n🛑 Shutting down gracefully...')
-  await closeDatabase()
-  process.exit(0)
-})
+void (async () => {
+  try {
+    await connectDatabase()
+    await initializeDatabaseIndexes()
+  } catch (error) {
+    console.warn('⚠️  MongoDB not connected at startup:', error)
+  }
+})()
 
-process.on('SIGTERM', async () => {
-  console.log('\n🛑 Shutting down gracefully...')
-  await closeDatabase()
-  process.exit(0)
-})
+if (!process.env.VERCEL) {
+  process.on('SIGINT', async () => {
+    console.log('\n🛑 Shutting down gracefully...')
+    await closeDatabase()
+    process.exit(0)
+  })
 
-startServer()
+  process.on('SIGTERM', async () => {
+    console.log('\n🛑 Shutting down gracefully...')
+    await closeDatabase()
+    process.exit(0)
+  })
+
+  void startServer()
+}
+
+export default app

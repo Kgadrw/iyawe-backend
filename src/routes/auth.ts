@@ -5,7 +5,8 @@ import { z } from 'zod'
 import { SignJWT } from 'jose'
 import { writeAuditLog } from '../lib/audit'
 import { ObjectId } from 'mongodb'
-import { getStaffStationContext } from '../lib/station-scope'
+import { getStaffStationContext } from '../lib/station-scope.js'
+import { getUserFromToken } from '../lib/middleware.js'
 
 const router = Router()
 
@@ -121,6 +122,7 @@ router.post('/login', async (req: Request, res: Response) => {
 
     return res.json({
       message: 'Login successful',
+      token,
       user: {
         id: user._id!.toString(),
         email: user.email,
@@ -139,7 +141,6 @@ router.post('/login', async (req: Request, res: Response) => {
 
 // GET /api/auth/me
 router.get('/me', async (req: Request, res: Response) => {
-  const { getUserFromToken } = await import('../lib/middleware')
   const session = await getUserFromToken(req)
   if (!session) {
     return res.json({ user: null })
@@ -163,7 +164,6 @@ router.get('/me', async (req: Request, res: Response) => {
 // PATCH /api/auth/me
 router.patch('/me', async (req: Request, res: Response) => {
   try {
-    const { getUserFromToken } = await import('../lib/middleware')
     const session = await getUserFromToken(req)
     if (!session) {
       return res.status(401).json({ error: 'Unauthorized' })

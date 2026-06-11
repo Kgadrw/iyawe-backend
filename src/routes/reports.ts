@@ -192,10 +192,12 @@ router.post('/found', requireRoles(['ADMIN', 'OFFICER', 'INSTITUTION']), upload.
 
     // In this mode, the authenticated account is the registrar (officer/institution personnel).
 
-    // Convert image to base64 if provided
+    // Convert image to base64 if provided (multipart upload or JSON data URL)
     let imageBase64: string | undefined
     if (req.file) {
       imageBase64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`
+    } else if (typeof req.body?.image === 'string' && req.body.image.trim()) {
+      imageBase64 = req.body.image.trim()
     }
 
     const foundReport: any = {
@@ -230,62 +232,60 @@ router.post('/found', requireRoles(['ADMIN', 'OFFICER', 'INSTITUTION']), upload.
     // Try to find matches
     const matches = await findMatchesForFoundReport(result.insertedId.toString())
 
-    // Import notification functions
-    const { createUserNotification, createAdminNotification, NotificationType } = await import('../lib/notifications.js')
-
-    // Check for exact matches and create notifications
     const exactMatches = matches.filter((m: any) => m.isExactMatch === true)
-    
-    if (exactMatches.length > 0) {
-      // Notify admin about exact matches
-      for (const match of exactMatches) {
-        const lostReport = await collections.lostReports().findOne({ _id: match.lostReportId })
-        const foundReportDoc = await collections.foundReports().findOne({ _id: match.foundReportId })
-        
-        if (lostReport && foundReportDoc) {
-          const documentTypeLabel = foundReportDoc.documentType.replace(/_/g, ' ')
-          const documentNumberPartial = foundReportDoc.documentNumber 
-            ? `${foundReportDoc.documentNumber.substring(0, 2)}****${foundReportDoc.documentNumber.substring(foundReportDoc.documentNumber.length - 2)}`
-            : 'N/A'
 
-          // Notify admin
-          await createAdminNotification(
-            NotificationType.ADMIN_MATCH_ALERT,
-            '🚨 Exact Document Match Found!',
-            `An exact document number match has been found!\n\nDocument Type: ${documentTypeLabel}\nDocument Number: ${documentNumberPartial}\nFound Location: ${foundReportDoc.foundLocation || 'N/A'}\n\nPlease review and verify the match.`,
-            match._id,
-            match.lostReportId,
-            match.foundReportId
-          )
+    try {
+      const { createUserNotification, createAdminNotification, NotificationType } = await import(
+        '../lib/notifications.js'
+      )
 
-          // Notify user who reported the lost document
-          if (lostReport.userId) {
-            await createUserNotification(
-              lostReport.userId,
-              NotificationType.MATCH_FOUND,
-              '🎉 Potential Match Found!',
-              `We found a document that matches your lost ${documentTypeLabel}!\n\nDocument Number: ${documentNumberPartial}\nFound Location: ${foundReportDoc.foundLocation || 'N/A'}\n\nPlease verify if this is your document.`,
+      if (exactMatches.length > 0) {
+        for (const match of exactMatches) {
+          const lostReport = await collections.lostReports().findOne({ _id: match.lostReportId })
+          const foundReportDoc = await collections.foundReports().findOne({ _id: match.foundReportId })
+
+          if (lostReport && foundReportDoc) {
+            const documentTypeLabel = foundReportDoc.documentType.replace(/_/g, ' ')
+            const documentNumberPartial = foundReportDoc.documentNumber
+              ? `${foundReportDoc.documentNumber.substring(0, 2)}****${foundReportDoc.documentNumber.substring(foundReportDoc.documentNumber.length - 2)}`
+              : 'N/A'
+
+            await createAdminNotification(
+              NotificationType.ADMIN_MATCH_ALERT,
+              '🚨 Exact Document Match Found!',
+              `An exact document number match has been found!\n\nDocument Type: ${documentTypeLabel}\nDocument Number: ${documentNumberPartial}\nFound Location: ${foundReportDoc.foundLocation || 'N/A'}\n\nPlease review and verify the match.`,
               match._id,
               match.lostReportId,
               match.foundReportId
             )
-          } else if (lostReport.reporterEmail) {
-            // For anonymous reports, we could send email notification here
-            // For now, we'll just log it
-            console.log(`Match found for anonymous lost report. Email: ${lostReport.reporterEmail}`)
+
+            if (lostReport.userId) {
+              await createUserNotification(
+                lostReport.userId,
+                NotificationType.MATCH_FOUND,
+                '🎉 Potential Match Found!',
+                `We found a document that matches your lost ${documentTypeLabel}!\n\nDocument Number: ${documentNumberPartial}\nFound Location: ${foundReportDoc.foundLocation || 'N/A'}\n\nPlease verify if this is your document.`,
+                match._id,
+                match.lostReportId,
+                match.foundReportId
+              )
+            } else if (lostReport.reporterEmail) {
+              console.log(`Match found for anonymous lost report. Email: ${lostReport.reporterEmail}`)
+            }
           }
         }
+      } else if (matches.length > 0) {
+        await createAdminNotification(
+          NotificationType.ADMIN_MATCH_ALERT,
+          '⚠️ Potential Document Match Found',
+          `${matches.length} potential match(es) found for the newly uploaded found document. Please review.`,
+          undefined,
+          undefined,
+          result.insertedId
+        )
       }
-    } else if (matches.length > 0) {
-      // Notify admin about potential matches (non-exact)
-      await createAdminNotification(
-        NotificationType.ADMIN_MATCH_ALERT,
-        '⚠️ Potential Document Match Found',
-        `${matches.length} potential match(es) found for the newly uploaded found document. Please review.`,
-        undefined,
-        undefined,
-        result.insertedId
-      )
+    } catch (notifyError) {
+      console.error('Match notifications failed (report still saved):', notifyError)
     }
 
     return res.status(201).json({
@@ -344,8 +344,15 @@ router.get('/found', authenticate, async (req: AuthRequest, res: Response) => {
 
         return {
           id: report._id!.toString(),
-          ...report,
-          userId: report.userId.toString(),
+          documentType: report.documentType,
+          documentNumber: report.documentNumber ?? null,
+          description: report.description ?? null,
+          foundLocation: report.foundLocation ?? null,
+          status: report.status ?? 'PENDING',
+          createdAt: report.createdAt,
+          updatedAt: report.updatedAt,
+          foundDate: report.foundDate,
+          userId: report.userId?.toString?.() ?? String(report.userId),
           matches: matchesWithLostReports,
         }
       })

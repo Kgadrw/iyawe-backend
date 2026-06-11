@@ -24,6 +24,9 @@ function getTransporter(): Transporter {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS,
       },
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 15_000,
     })
   }
 
@@ -42,11 +45,19 @@ export async function sendEmail(options: SendEmailOptions): Promise<void> {
     process.env.SMTP_FROM ||
     `Subizwa <${process.env.SMTP_USER}>`
 
-  await getTransporter().sendMail({
+  const timeoutMs = Number(process.env.SMTP_TIMEOUT_MS || 12_000)
+  const sendMail = getTransporter().sendMail({
     from,
     to: options.to,
     subject: options.subject,
     text: options.text,
     html: options.html ?? options.text.replace(/\n/g, '<br>'),
   })
+
+  await Promise.race([
+    sendMail,
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`SMTP send timed out after ${timeoutMs}ms`)), timeoutMs)
+    }),
+  ])
 }

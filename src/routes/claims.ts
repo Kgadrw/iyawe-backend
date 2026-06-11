@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { ObjectId } from 'mongodb'
 import { collections } from '../lib/db'
 import { getStationForUserId } from '../lib/station-info'
+import { isEmailConfigured } from '../lib/email'
 import { sendClaimConfirmationEmail } from '../lib/claim-email'
 import { writeAuditLog } from '../lib/audit'
 
@@ -74,17 +75,24 @@ router.post('/', async (req: Request, res: Response) => {
         }
 
     const documentTypeLabel = String(foundReport.documentType || 'Document').replace(/_/g, ' ')
+    const emailQueued = isEmailConfigured()
 
-    const emailSent = await sendClaimConfirmationEmail({
-      to: data.claimantEmail,
-      claimantName: data.claimantName,
-      documentTypeLabel,
-      documentNumber: foundReport.documentNumber,
-      station,
-      foundLocation: foundReport.foundLocation,
-    })
+    if (emailQueued) {
+      void sendClaimConfirmationEmail({
+        to: data.claimantEmail,
+        claimantName: data.claimantName,
+        documentTypeLabel,
+        documentNumber: foundReport.documentNumber,
+        station,
+        foundLocation: foundReport.foundLocation,
+      }).catch((error) => {
+        console.error('Background claim email failed:', error)
+      })
+    } else {
+      console.warn('SMTP not configured on server — claim confirmation email skipped')
+    }
 
-    await writeAuditLog({
+    void writeAuditLog({
       actorUserId: null,
       actorRole: null,
       action: 'REPORT_FOUND_CREATE',
@@ -94,14 +102,17 @@ router.post('/', async (req: Request, res: Response) => {
       metadata: {
         claimId: claimResult.insertedId.toString(),
         foundReportId: data.foundReportId,
-        emailSent,
+        emailQueued,
       },
+    }).catch((error) => {
+      console.error('Claim audit log failed:', error)
     })
 
     return res.status(201).json({
       message: 'Claim submitted successfully',
       claimId: claimResult.insertedId.toString(),
-      emailSent,
+      emailSent: emailQueued,
+      emailQueued,
       station: {
         name: station.name,
         address: station.address,

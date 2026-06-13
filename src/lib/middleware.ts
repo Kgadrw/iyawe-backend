@@ -66,30 +66,19 @@ export async function requireAuth(req: AuthRequest, res: Response, next: NextFun
 
 export async function requireAdmin(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    console.log('requireAdmin middleware - Checking authentication')
-    console.log('Request path:', req.path)
-    console.log('Request method:', req.method)
-    console.log('Cookies:', req.cookies)
-    console.log('Authorization header:', req.headers.authorization ? 'Present' : 'Missing')
-    
     const user = await getUserFromToken(req)
     if (!user) {
-      console.log('requireAdmin: No user found')
       return res.status(401).json({ error: 'Unauthorized' })
     }
-    console.log('requireAdmin: User found:', { userId: user.userId, email: user.email, role: user.role })
     if (user.role !== 'ADMIN') {
-      console.log('requireAdmin: User is not admin')
       return res.status(403).json({ error: 'Forbidden: Admin access required' })
     }
     req.user = user
     req.userId = user.userId
-    console.log('requireAdmin: Authentication successful')
     next()
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error in requireAdmin middleware:', error)
-    console.error('Error stack:', error.stack)
-    return res.status(401).json({ error: 'Unauthorized', details: error.message })
+    return res.status(401).json({ error: 'Unauthorized' })
   }
 }
 

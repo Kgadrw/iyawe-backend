@@ -10,14 +10,20 @@ let transporter: Transporter | null = null
 let smtpVerified = false
 let activeProvider: 'resend' | 'smtp' | null = null
 
-export function getEmailProvider(): 'resend' | 'smtp' | null {
-  if (isResendConfigured()) return 'resend'
-  if (isSmtpConfigured()) return 'smtp'
-  return null
+/** Render (and similar hosts) block outbound SMTP — use Resend HTTPS API instead. */
+function isRenderHosted(): boolean {
+  return Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID)
 }
 
 function isSmtpConfigured(): boolean {
   return Boolean(process.env.SMTP_USER?.trim() && process.env.SMTP_PASS?.trim())
+}
+
+export function getEmailProvider(): 'resend' | 'smtp' | null {
+  if (isResendConfigured()) return 'resend'
+  if (isRenderHosted()) return null
+  if (isSmtpConfigured()) return 'smtp'
+  return null
 }
 
 /** True when Resend API or SMTP credentials are set. */
@@ -61,16 +67,20 @@ async function verifySmtpTransport(): Promise<boolean> {
     console.log('[email] SMTP connection verified')
     return true
   } catch (error) {
-    console.error('[email] SMTP verification failed:', error)
-    console.warn(
-      '[email] Render blocks SMTP ports — set RESEND_API_KEY on Render instead (see backend/.env.example)'
-    )
+    console.error('[email] SMTP verification failed (local dev only):', error)
     return false
   }
 }
 
 /** Verify email transport at startup — prefers Resend on cloud hosts. */
 export async function verifyEmailTransport(): Promise<boolean> {
+  if (isRenderHosted() && !isResendConfigured()) {
+    console.warn(
+      '[email] Render blocks Gmail/SMTP. Add RESEND_API_KEY and RESEND_FROM in Render env vars to enable claim emails.'
+    )
+    return false
+  }
+
   if (!isEmailConfigured()) {
     console.warn('[email] No email provider configured — outbound emails disabled')
     console.warn('[email] Set RESEND_API_KEY (Render) or SMTP_USER/SMTP_PASS (local dev)')

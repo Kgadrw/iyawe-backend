@@ -8,6 +8,40 @@ import { ObjectId } from 'mongodb'
 import { writeAuditLog } from '../lib/audit.js'
 import { getStaffStationContext, staffCanManageFoundReport } from '../lib/station-scope.js'
 
+async function loadStaffContext(user: { userId: string; role: string }) {
+  if (user.role === 'ADMIN') {
+    return { userId: user.userId, role: user.role, stationName: null, stationKey: null }
+  }
+  return getStaffStationContext(user.userId)
+}
+
+async function assertStaffCanManageReport(
+  user: { userId: string; role: string },
+  report: { userId?: ObjectId | string; stationName?: string | null }
+) {
+  const ctx = await loadStaffContext(user)
+  if (!staffCanManageFoundReport(ctx, report)) {
+    return false
+  }
+  return true
+}
+
+function serializeFoundReport(report: Record<string, unknown>, extras?: Record<string, unknown>) {
+  return {
+    id: String(report._id),
+    documentType: report.documentType,
+    documentNumber: report.documentNumber ?? null,
+    description: report.description ?? null,
+    foundLocation: report.foundLocation ?? null,
+    status: report.status ?? 'PENDING',
+    createdAt: report.createdAt,
+    updatedAt: report.updatedAt,
+    foundDate: report.foundDate,
+    userId: report.userId?.toString?.() ?? String(report.userId),
+    ...extras,
+  }
+}
+
 // Configure multer for memory storage
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -342,19 +376,15 @@ router.get('/found', authenticate, async (req: AuthRequest, res: Response) => {
           })
         )
 
-        return {
-          id: report._id!.toString(),
-          documentType: report.documentType,
-          documentNumber: report.documentNumber ?? null,
-          description: report.description ?? null,
-          foundLocation: report.foundLocation ?? null,
-          status: report.status ?? 'PENDING',
-          createdAt: report.createdAt,
-          updatedAt: report.updatedAt,
-          foundDate: report.foundDate,
-          userId: report.userId?.toString?.() ?? String(report.userId),
+        const pendingClaimCount = await collections.claims().countDocuments({
+          foundReportId: report._id!,
+          status: 'PENDING',
+        })
+
+        return serializeFoundReport(report as Record<string, unknown>, {
           matches: matchesWithLostReports,
-        }
+          pendingClaimCount,
+        })
       })
     )
 
@@ -409,13 +439,11 @@ router.patch('/found/:id/status', authenticate, async (req: AuthRequest, res: Re
     }
 
     if (user.role !== 'ADMIN') {
-      const stationCtx = await getStaffStationContext(user.userId)
-      if (
-        !staffCanManageFoundReport(stationCtx, {
-          userId: report.userId as ObjectId | string | undefined,
-          stationName: (report as { stationName?: string | null }).stationName,
-        })
-      ) {
+      const allowed = await assertStaffCanManageReport(user, {
+        userId: report.userId as ObjectId | string | undefined,
+        stationName: (report as { stationName?: string | null }).stationName,
+      })
+      if (!allowed) {
         return res.status(403).json({ error: 'Forbidden' })
       }
     }
@@ -474,6 +502,157 @@ router.patch('/found/:id/status', authenticate, async (req: AuthRequest, res: Re
     }
     console.error('Error updating found report status:', error)
     return res.status(500).json({ error: 'Failed to update status' })
+  }
+})
+
+const updateFoundReportSchema = z.object({
+  documentType: documentTypeEnum.optional(),
+  documentNumber: z.string().max(120).optional().nullable(),
+  description: z.string().max(500).optional().nullable(),
+  foundLocation: z.string().max(200).optional().nullable(),
+})
+
+// GET /api/reports/found/:id/claims — staff view claimants
+router.get('/found/:id/claims', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const user = req.user!
+    if (!['ADMIN', 'OFFICER', 'INSTITUTION'].includes(user.role)) {
+      return res.status(403).json({ error: 'Forbidden' })
+    }
+
+    const report = await collections.foundReports().findOne({ _id: new ObjectId(req.params.id) })
+    if (!report) return res.status(404).json({ error: 'Report not found' })
+
+    if (user.role !== 'ADMIN') {
+      const allowed = await assertStaffCanManageReport(user, {
+        userId: report.userId as ObjectId | string | undefined,
+        stationName: (report as { stationName?: string | null }).stationName,
+      })
+      if (!allowed) return res.status(403).json({ error: 'Forbidden' })
+    }
+
+    const claims = await collections
+      .claims()
+      .find({ foundReportId: report._id })
+      .sort({ createdAt: -1 })
+      .toArray()
+
+    return res.json({
+      claims: claims.map((c) => ({
+        id: c._id!.toString(),
+        claimantName: c.claimantName,
+        claimantEmail: c.claimantEmail,
+        claimantPhone: c.claimantPhone ?? null,
+        documentNumber: c.documentNumber ?? null,
+        description: c.description ?? null,
+        status: c.status ?? 'PENDING',
+        rejectionNote: c.rejectionNote ?? null,
+        createdAt: c.createdAt,
+      })),
+    })
+  } catch (error) {
+    console.error('Error fetching claims:', error)
+    return res.status(500).json({ error: 'Failed to fetch claims' })
+  }
+})
+
+// PUT /api/reports/found/:id — staff edit document
+router.put('/found/:id', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const user = req.user!
+    if (!['ADMIN', 'OFFICER', 'INSTITUTION'].includes(user.role)) {
+      return res.status(403).json({ error: 'Forbidden' })
+    }
+
+    const data = updateFoundReportSchema.parse(req.body)
+    const report = await collections.foundReports().findOne({ _id: new ObjectId(req.params.id) })
+    if (!report) return res.status(404).json({ error: 'Report not found' })
+
+    if (report.status === 'HANDED_OVER') {
+      return res.status(400).json({ error: 'Collected documents cannot be edited' })
+    }
+
+    if (user.role !== 'ADMIN') {
+      const allowed = await assertStaffCanManageReport(user, {
+        userId: report.userId as ObjectId | string | undefined,
+        stationName: (report as { stationName?: string | null }).stationName,
+      })
+      if (!allowed) return res.status(403).json({ error: 'Forbidden' })
+    }
+
+    const update: Record<string, unknown> = { updatedAt: new Date() }
+    if (data.documentType !== undefined) update.documentType = data.documentType
+    if (data.documentNumber !== undefined) update.documentNumber = data.documentNumber || null
+    if (data.description !== undefined) update.description = data.description || null
+    if (data.foundLocation !== undefined) update.foundLocation = data.foundLocation || null
+
+    await collections.foundReports().updateOne({ _id: report._id }, { $set: update })
+
+    await writeAuditLog({
+      actorUserId: new ObjectId(user.userId),
+      actorRole: user.role as any,
+      action: 'REPORT_STATUS_UPDATE',
+      entityType: 'FOUND_REPORT',
+      entityId: report._id as ObjectId,
+      message: 'Updated found document details',
+    })
+
+    const updated = await collections.foundReports().findOne({ _id: report._id })
+    return res.json({
+      message: 'Document updated',
+      report: serializeFoundReport(updated as Record<string, unknown>),
+    })
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Invalid input', details: error.errors })
+    }
+    console.error('Error updating found report:', error)
+    return res.status(500).json({ error: 'Failed to update document' })
+  }
+})
+
+// DELETE /api/reports/found/:id — staff remove document
+router.delete('/found/:id', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const user = req.user!
+    if (!['ADMIN', 'OFFICER', 'INSTITUTION'].includes(user.role)) {
+      return res.status(403).json({ error: 'Forbidden' })
+    }
+
+    const report = await collections.foundReports().findOne({ _id: new ObjectId(req.params.id) })
+    if (!report) return res.status(404).json({ error: 'Report not found' })
+
+    if (user.role !== 'ADMIN' && report.status === 'HANDED_OVER') {
+      return res.status(400).json({ error: 'Collected documents cannot be deleted' })
+    }
+
+    if (user.role !== 'ADMIN') {
+      const allowed = await assertStaffCanManageReport(user, {
+        userId: report.userId as ObjectId | string | undefined,
+        stationName: (report as { stationName?: string | null }).stationName,
+      })
+      if (!allowed) return res.status(403).json({ error: 'Forbidden' })
+    }
+
+    await collections.claims().deleteMany({ foundReportId: report._id })
+    await collections.matches().deleteMany({
+      $or: [{ foundReportId: report._id }, { lostReportId: report._id }],
+    })
+    await collections.foundReports().deleteOne({ _id: report._id })
+
+    await writeAuditLog({
+      actorUserId: new ObjectId(user.userId),
+      actorRole: user.role as any,
+      action: 'REPORT_STATUS_UPDATE',
+      entityType: 'FOUND_REPORT',
+      entityId: report._id as ObjectId,
+      message: 'Deleted found document',
+    })
+
+    return res.json({ message: 'Document deleted' })
+  } catch (error) {
+    console.error('Error deleting found report:', error)
+    return res.status(500).json({ error: 'Failed to delete document' })
   }
 })
 

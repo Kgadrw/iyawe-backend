@@ -36,14 +36,20 @@ router.post('/', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'This document has already been collected' })
     }
 
-    if (foundReport.status === 'CLAIM_PENDING') {
-      return res.status(400).json({ error: 'A claim is already pending for this document' })
+    const normalizedEmail = data.claimantEmail.trim().toLowerCase()
+    const existingClaim = await collections.claims().findOne({
+      foundReportId: foundReport._id,
+      claimantEmail: normalizedEmail,
+      status: 'PENDING',
+    })
+    if (existingClaim) {
+      return res.status(400).json({ error: 'You have already submitted a claim for this document' })
     }
 
     const claimDoc = {
       foundReportId: foundReport._id,
-      claimantName: data.claimantName,
-      claimantEmail: data.claimantEmail,
+      claimantName: data.claimantName.trim(),
+      claimantEmail: normalizedEmail,
       claimantPhone: data.claimantPhone || null,
       lostDate: data.lostDate ? new Date(data.lostDate) : null,
       description: data.description || null,
@@ -56,7 +62,7 @@ router.post('/', async (req: Request, res: Response) => {
     const claimResult = await collections.claims().insertOne(claimDoc)
 
     await collections.foundReports().updateOne(
-      { _id: foundReport._id },
+      { _id: foundReport._id, status: { $ne: 'HANDED_OVER' } },
       {
         $set: {
           status: 'CLAIM_PENDING',

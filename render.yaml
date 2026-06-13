@@ -27,3 +27,7 @@ services:
         sync: false
       - key: SMTP_FROM
         sync: false
+      - key: APP_URL
+        sync: false
+      - key: ADMIN_ALERT_EMAIL
+        sync: false

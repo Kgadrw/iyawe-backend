@@ -4,6 +4,7 @@ import cookieParser from 'cookie-parser'
 import dotenv from 'dotenv'
 import { connectDatabase, closeDatabase } from './lib/db'
 import { initializeDatabaseIndexes } from './lib/db-init'
+import { verifyEmailTransport } from './lib/email'
 import authRoutes from './routes/auth'
 import reportsRoutes from './routes/reports'
 import matchesRoutes from './routes/matches'
@@ -118,6 +119,7 @@ void (async () => {
   } catch (error) {
     console.warn('⚠️  MongoDB not connected at startup:', error)
   }
+  void verifyEmailTransport()
 })()
 
 if (!process.env.VERCEL) {

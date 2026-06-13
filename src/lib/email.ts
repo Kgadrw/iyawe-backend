@@ -2,9 +2,10 @@ import nodemailer from 'nodemailer'
 import type { Transporter } from 'nodemailer'
 
 let transporter: Transporter | null = null
+let verified = false
 
 export function isEmailConfigured(): boolean {
-  return Boolean(process.env.SMTP_USER && process.env.SMTP_PASS)
+  return Boolean(process.env.SMTP_USER?.trim() && process.env.SMTP_PASS?.trim())
 }
 
 function getTransporter(): Transporter {
@@ -21,8 +22,8 @@ function getTransporter(): Transporter {
       port,
       secure,
       auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
+        user: process.env.SMTP_USER!.trim(),
+        pass: process.env.SMTP_PASS!.trim(),
       },
       connectionTimeout: 10_000,
       greetingTimeout: 10_000,
@@ -33,25 +34,49 @@ function getTransporter(): Transporter {
   return transporter
 }
 
+/** Verify SMTP once at startup or first send — logs result, does not crash the server. */
+export async function verifyEmailTransport(): Promise<boolean> {
+  if (!isEmailConfigured()) {
+    console.warn('[email] SMTP not configured — outbound emails disabled')
+    return false
+  }
+  if (verified) return true
+
+  try {
+    await getTransporter().verify()
+    verified = true
+    console.log('[email] SMTP connection verified')
+    return true
+  } catch (error) {
+    console.error('[email] SMTP verification failed:', error)
+    return false
+  }
+}
+
 export type SendEmailOptions = {
   to: string
   subject: string
   text: string
-  html?: string
+  html: string
 }
 
 export async function sendEmail(options: SendEmailOptions): Promise<void> {
-  const from =
-    process.env.SMTP_FROM ||
-    `Subizwa <${process.env.SMTP_USER}>`
+  if (!isEmailConfigured()) {
+    throw new Error('SMTP is not configured')
+  }
 
-  const timeoutMs = Number(process.env.SMTP_TIMEOUT_MS || 12_000)
+  const from =
+    process.env.SMTP_FROM?.trim() ||
+    `Subizwa <${process.env.SMTP_USER!.trim()}>`
+
+  const timeoutMs = Number(process.env.SMTP_TIMEOUT_MS || 15_000)
+
   const sendMail = getTransporter().sendMail({
     from,
-    to: options.to,
+    to: options.to.trim(),
     subject: options.subject,
     text: options.text,
-    html: options.html ?? options.text.replace(/\n/g, '<br>'),
+    html: options.html,
   })
 
   await Promise.race([

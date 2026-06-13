@@ -2,6 +2,7 @@ import { ObjectId } from 'mongodb'
 import { collections } from './db'
 import { getUserById } from './auth'
 import { isEmailConfigured, sendEmail } from './email'
+import { buildSubizwaEmail, getAppUrl } from './email-template'
 import {
   createAdminNotification,
   createUserNotification,
@@ -63,45 +64,38 @@ function buildOwnerEmail(lostReport: LostReportDoc, foundReport: FoundReportDoc,
   const docType = formatDocType(foundReport.documentType)
   const docNum = maskDocumentNumber(foundReport.documentNumber)
   const location = foundReport.foundLocation || 'Not specified'
-  const appUrl = process.env.APP_URL || 'http://localhost:3000'
+  const name = lostReport.reporterName || 'there'
 
-  const subject = isExact
-    ? 'Subizwa: Strong match found for your lost document'
-    : 'Subizwa: Possible match for your lost document'
-
-  const intro = isExact
-    ? `Good news — a recovered document closely matches your lost ${docType} report.`
-    : `A recovered document may match your lost ${docType} report.`
-
-  const text = `Hello ${lostReport.reporterName || 'there'},
-
-${intro}
-
-Document type: ${docType}
-Document number (partial): ${docNum}
-Found location: ${location}
-
-Please sign in or visit Subizwa to review and verify whether this is your document:
-${appUrl}
-
-If you did not report a lost document with Subizwa, you can ignore this email.
-
-— Subizwa`
-
-  const html = `
-    <p>Hello ${lostReport.reporterName || 'there'},</p>
-    <p>${intro}</p>
-    <ul>
-      <li><strong>Document type:</strong> ${docType}</li>
-      <li><strong>Document number (partial):</strong> ${docNum}</li>
-      <li><strong>Found location:</strong> ${location}</li>
-    </ul>
-    <p><a href="${appUrl}">Open Subizwa</a> to review this match.</p>
-    <p style="color:#666;font-size:12px;">If you did not report a lost document, you can ignore this message.</p>
-    <p>— Subizwa</p>
-  `
-
-  return { subject, text, html }
+  return buildSubizwaEmail({
+    subject: isExact
+      ? 'Subizwa — Strong match for your lost document'
+      : 'Subizwa — Possible match for your lost document',
+    preheader: isExact
+      ? 'A recovered document closely matches your lost report.'
+      : 'A recovered document may match your lost report.',
+    recipientName: name,
+    headline: isExact ? 'Strong match found for your report' : 'Possible match for your report',
+    bodyParagraphs: isExact
+      ? [
+          `Good news — a recovered document closely matches your lost ${docType} report on Subizwa.`,
+          'Please review the match and verify whether this is your document.',
+        ]
+      : [
+          `A recovered ${docType} may match your lost report on Subizwa.`,
+          'Please review the details and confirm if this is your document.',
+        ],
+    sections: [
+      {
+        title: 'Match details',
+        rows: [
+          { label: 'Document type', value: docType },
+          { label: 'Number (partial)', value: docNum },
+          { label: 'Found location', value: location },
+        ],
+      },
+    ],
+    cta: { label: 'Review match on Subizwa', url: getAppUrl() },
+  })
 }
 
 async function sendOwnerMatchEmail(
@@ -141,22 +135,36 @@ async function sendAdminMatchEmail(
 
   const docType = formatDocType(foundReport.documentType)
   const docNum = maskDocumentNumber(foundReport.documentNumber)
+  const lostType = formatDocType(lostReport.documentType)
 
-  const subject = isExact
-    ? 'Subizwa admin: exact document match'
-    : 'Subizwa admin: potential document match'
-
-  const text = `${isExact ? 'Exact' : 'Potential'} match detected.
-
-Lost report: ${formatDocType(lostReport.documentType)}
-Found report: ${docType}
-Document number (partial): ${docNum}
-Found location: ${foundReport.foundLocation || 'N/A'}
-
-Review in the admin dashboard.`
+  const { subject, text, html } = buildSubizwaEmail({
+    subject: isExact
+      ? 'Subizwa Admin — Exact document match'
+      : 'Subizwa Admin — Potential document match',
+    preheader: `${isExact ? 'Exact' : 'Potential'} match requires review in the admin dashboard.`,
+    recipientName: 'Admin',
+    headline: isExact ? 'Exact match detected' : 'Potential match detected',
+    bodyParagraphs: [
+      'A new document match has been detected on Subizwa and requires your review.',
+    ],
+    sections: [
+      {
+        title: 'Match summary',
+        rows: [
+          { label: 'Match type', value: isExact ? 'Exact' : 'Potential' },
+          { label: 'Lost report', value: lostType },
+          { label: 'Found report', value: docType },
+          { label: 'Number (partial)', value: docNum },
+          { label: 'Found location', value: foundReport.foundLocation || 'Not specified' },
+        ],
+      },
+    ],
+    cta: { label: 'Open admin dashboard', url: `${getAppUrl()}/dashboard/admin` },
+    footerNote: 'Internal notification for Subizwa administrators.',
+  })
 
   try {
-    await sendEmail({ to: adminTo, subject, text })
+    await sendEmail({ to: adminTo, subject, text, html })
   } catch (error) {
     console.error('Failed to send admin match alert email', error)
   }

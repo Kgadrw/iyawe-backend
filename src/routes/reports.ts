@@ -367,8 +367,16 @@ router.get('/found', authenticate, async (req: AuthRequest, res: Response) => {
 
 const statusSchema = z.object({
   status: z.enum(['PENDING', 'CLAIM_PENDING', 'MATCHED', 'VERIFIED', 'HANDED_OVER']),
-  note: z.string().optional(),
+  note: z.string().max(500).optional(),
 })
+
+function isRejectTransition(from: string | undefined, to: string): boolean {
+  return to === 'PENDING' && from === 'CLAIM_PENDING'
+}
+
+function isCollectTransition(to: string): boolean {
+  return to === 'HANDED_OVER'
+}
 
 // PATCH /api/reports/found/:id/status
 router.patch('/found/:id/status', authenticate, async (req: AuthRequest, res: Response) => {
@@ -383,6 +391,22 @@ router.patch('/found/:id/status', authenticate, async (req: AuthRequest, res: Re
 
     const report = await collections.foundReports().findOne({ _id: new ObjectId(id) })
     if (!report) return res.status(404).json({ error: 'Report not found' })
+
+    const previousStatus = (report.status as string | undefined) || 'PENDING'
+
+    if (previousStatus === 'HANDED_OVER') {
+      return res.status(400).json({ error: 'This document has already been collected' })
+    }
+
+    if (isRejectTransition(previousStatus, data.status)) {
+      // Reject pending claim(s) — document returns to station
+    } else if (isCollectTransition(data.status)) {
+      if (previousStatus !== 'PENDING' && previousStatus !== 'CLAIM_PENDING') {
+        return res.status(400).json({ error: 'Cannot mark this document as collected' })
+      }
+    } else if (data.status !== previousStatus) {
+      return res.status(400).json({ error: 'Invalid status change for staff' })
+    }
 
     if (user.role !== 'ADMIN') {
       const stationCtx = await getStaffStationContext(user.userId)
@@ -401,17 +425,49 @@ router.patch('/found/:id/status', authenticate, async (req: AuthRequest, res: Re
       { $set: { status: data.status, statusNote: data.note || null, updatedAt: new Date() } }
     )
 
+    if (isRejectTransition(previousStatus, data.status)) {
+      await collections.claims().updateMany(
+        { foundReportId: report._id, status: 'PENDING' },
+        {
+          $set: {
+            status: 'REJECTED',
+            rejectionNote: data.note || 'Claim rejected by station staff',
+            updatedAt: new Date(),
+          },
+        }
+      )
+    }
+
+    if (isCollectTransition(data.status)) {
+      await collections.claims().updateMany(
+        { foundReportId: report._id, status: 'PENDING' },
+        { $set: { status: 'FULFILLED', updatedAt: new Date() } }
+      )
+    }
+
+    const auditMessage = isRejectTransition(previousStatus, data.status)
+      ? 'Rejected pending claim(s); document returned to station'
+      : isCollectTransition(data.status)
+        ? 'Document marked as collected by owner'
+        : `Updated found report status to ${data.status}`
+
     await writeAuditLog({
       actorUserId: new ObjectId(user.userId),
       actorRole: user.role as any,
       action: 'REPORT_STATUS_UPDATE',
       entityType: 'FOUND_REPORT',
       entityId: new ObjectId(id),
-      message: `Updated found report status to ${data.status}`,
-      metadata: { note: data.note || null, previousStatus: report.status || null },
+      message: auditMessage,
+      metadata: { note: data.note || null, previousStatus, newStatus: data.status },
     })
 
-    return res.json({ message: 'Status updated successfully' })
+    return res.json({
+      message: isRejectTransition(previousStatus, data.status)
+        ? 'Claim rejected — document is available at station again'
+        : isCollectTransition(data.status)
+          ? 'Document marked as collected'
+          : 'Status updated successfully',
+    })
   } catch (error) {
     if (error instanceof z.ZodError) {
       return res.status(400).json({ error: 'Invalid input', details: error.errors })

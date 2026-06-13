@@ -1,25 +1,26 @@
 import dotenv from 'dotenv'
-import { isEmailConfigured, sendEmail, verifyEmailTransport } from '../src/lib/email'
+import { getEmailProvider, isEmailConfigured, sendEmail, verifyEmailTransport } from '../src/lib/email'
 import { buildSubizwaEmail, getAppUrl } from '../src/lib/email-template'
 
 dotenv.config()
 
 async function main() {
-  const to = process.argv[2] || process.env.SMTP_USER
+  const to = process.argv[2] || process.env.ADMIN_ALERT_EMAIL || process.env.SMTP_USER
   if (!to) {
     console.error('Usage: npm run test:email -- your@email.com')
     process.exit(1)
   }
 
   if (!isEmailConfigured()) {
-    console.error('Set SMTP_USER and SMTP_PASS in backend/.env first')
+    console.error('Set RESEND_API_KEY (Render) or SMTP_USER/SMTP_PASS (local) in backend/.env')
     process.exit(1)
   }
 
-  console.log('Verifying SMTP connection…')
+  const provider = getEmailProvider()
+  console.log(`Verifying ${provider} email transport…`)
   const verified = await verifyEmailTransport()
   if (!verified) {
-    console.error('SMTP verification failed — check credentials and network')
+    console.error('Email verification failed — check credentials')
     process.exit(1)
   }
 
@@ -30,14 +31,14 @@ async function main() {
     headline: 'Email delivery is working',
     bodyParagraphs: [
       'This is a test message from the Subizwa backend.',
-      'If you received this email, SMTP is configured correctly and claim notifications will be sent.',
+      `Provider: ${provider}. If you received this email, claim notifications will be sent.`,
     ],
     sections: [
       {
         title: 'Configuration',
         rows: [
           { label: 'App URL', value: getAppUrl() },
-          { label: 'SMTP host', value: process.env.SMTP_HOST || 'smtp.gmail.com' },
+          { label: 'Provider', value: provider ?? 'none' },
         ],
       },
     ],

@@ -1,15 +1,32 @@
 import nodemailer from 'nodemailer'
 import type { Transporter } from 'nodemailer'
+import {
+  isResendConfigured,
+  sendEmailViaResend,
+  verifyResendTransport,
+} from './email-resend'
 
 let transporter: Transporter | null = null
-let verified = false
+let smtpVerified = false
+let activeProvider: 'resend' | 'smtp' | null = null
 
-export function isEmailConfigured(): boolean {
+export function getEmailProvider(): 'resend' | 'smtp' | null {
+  if (isResendConfigured()) return 'resend'
+  if (isSmtpConfigured()) return 'smtp'
+  return null
+}
+
+function isSmtpConfigured(): boolean {
   return Boolean(process.env.SMTP_USER?.trim() && process.env.SMTP_PASS?.trim())
 }
 
+/** True when Resend API or SMTP credentials are set. */
+export function isEmailConfigured(): boolean {
+  return getEmailProvider() !== null
+}
+
 function getTransporter(): Transporter {
-  if (!isEmailConfigured()) {
+  if (!isSmtpConfigured()) {
     throw new Error('SMTP is not configured (SMTP_USER and SMTP_PASS required)')
   }
 
@@ -34,23 +51,40 @@ function getTransporter(): Transporter {
   return transporter
 }
 
-/** Verify SMTP once at startup or first send — logs result, does not crash the server. */
-export async function verifyEmailTransport(): Promise<boolean> {
-  if (!isEmailConfigured()) {
-    console.warn('[email] SMTP not configured — outbound emails disabled')
-    return false
-  }
-  if (verified) return true
+async function verifySmtpTransport(): Promise<boolean> {
+  if (!isSmtpConfigured()) return false
+  if (smtpVerified) return true
 
   try {
     await getTransporter().verify()
-    verified = true
+    smtpVerified = true
     console.log('[email] SMTP connection verified')
     return true
   } catch (error) {
     console.error('[email] SMTP verification failed:', error)
+    console.warn(
+      '[email] Render blocks SMTP ports — set RESEND_API_KEY on Render instead (see backend/.env.example)'
+    )
     return false
   }
+}
+
+/** Verify email transport at startup — prefers Resend on cloud hosts. */
+export async function verifyEmailTransport(): Promise<boolean> {
+  if (!isEmailConfigured()) {
+    console.warn('[email] No email provider configured — outbound emails disabled')
+    console.warn('[email] Set RESEND_API_KEY (Render) or SMTP_USER/SMTP_PASS (local dev)')
+    return false
+  }
+
+  const provider = getEmailProvider()!
+  activeProvider = provider
+
+  if (provider === 'resend') {
+    return verifyResendTransport()
+  }
+
+  return verifySmtpTransport()
 }
 
 export type SendEmailOptions = {
@@ -60,16 +94,12 @@ export type SendEmailOptions = {
   html: string
 }
 
-export async function sendEmail(options: SendEmailOptions): Promise<void> {
-  if (!isEmailConfigured()) {
-    throw new Error('SMTP is not configured')
-  }
-
+async function sendEmailViaSmtp(options: SendEmailOptions): Promise<void> {
   const from =
     process.env.SMTP_FROM?.trim() ||
     `Subizwa <${process.env.SMTP_USER!.trim()}>`
 
-  const timeoutMs = Number(process.env.SMTP_TIMEOUT_MS || 15_000)
+  const timeoutMs = Number(process.env.EMAIL_TIMEOUT_MS || process.env.SMTP_TIMEOUT_MS || 15_000)
 
   const sendMail = getTransporter().sendMail({
     from,
@@ -85,4 +115,18 @@ export async function sendEmail(options: SendEmailOptions): Promise<void> {
       setTimeout(() => reject(new Error(`SMTP send timed out after ${timeoutMs}ms`)), timeoutMs)
     }),
   ])
+}
+
+export async function sendEmail(options: SendEmailOptions): Promise<void> {
+  const provider = activeProvider ?? getEmailProvider()
+  if (!provider) {
+    throw new Error('Email is not configured')
+  }
+
+  if (provider === 'resend') {
+    await sendEmailViaResend(options)
+    return
+  }
+
+  await sendEmailViaSmtp(options)
 }
